@@ -1,0 +1,6 @@
+Tests/
+bin/
+obj/
+.git/
+.github/
+.gitignore
