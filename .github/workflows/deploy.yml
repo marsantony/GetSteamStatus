@@ -1,0 +1,47 @@
+name: Test & Deploy
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  test-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      # CI：跑測試
+      - name: Run tests
+        run: dotnet test Tests/SendHttpRequest.Tests.csproj --verbosity normal
+
+      # 認證：Workload Identity Federation（無密鑰）
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: 'projects/718670028103/locations/global/workloadIdentityPools/github-pool/providers/github-provider'
+          service_account: 'getsteamstatus@steamwebapi-394409.iam.gserviceaccount.com'
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      # CD：測試通過才部署
+      - name: Deploy Cloud Function
+        run: |
+          gcloud functions deploy GetSteamStatus \
+            --gen2 \
+            --runtime=dotnet8 \
+            --region=asia-east1 \
+            --source=. \
+            --entry-point=SendHttpRequest.Function \
+            --trigger-http \
+            --allow-unauthenticated \
+            --service-account=getsteamstatus@steamwebapi-394409.iam.gserviceaccount.com \
+            --set-env-vars=STEAM_API_KEY=${{ secrets.STEAM_API_KEY }} \
+            --max-instances=1 \
+            --memory=256Mi
