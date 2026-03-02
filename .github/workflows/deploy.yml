@@ -18,9 +18,16 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
-      # CI：跑測試
-      - name: Run tests
-        run: dotnet test Tests/SendHttpRequest.Tests.csproj --verbosity normal
+      # CI：跑測試 + 覆蓋率
+      - name: Run tests with coverage
+        run: dotnet test Tests/SendHttpRequest.Tests.csproj --verbosity normal --collect:"XPlat Code Coverage" --results-directory ./coverage
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-report
+          path: coverage/
+          retention-days: 14
 
       # 認證：Workload Identity Federation（無密鑰）
       - uses: google-github-actions/auth@v2
