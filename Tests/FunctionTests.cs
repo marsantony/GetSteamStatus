@@ -1,4 +1,6 @@
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Newtonsoft.Json.Linq;
 using SendHttpRequest;
 using System.Net;
@@ -9,12 +11,12 @@ namespace SendHttpRequest.Tests;
 
 public class MockHttpMessageHandler : HttpMessageHandler
 {
-    private readonly Dictionary<string, string> _responses = new();
+    private readonly Dictionary<string, (string body, HttpStatusCode status)> _responses = new();
     public List<string> RequestedUrls { get; } = new();
 
-    public void SetResponse(string urlContains, string jsonResponse)
+    public void SetResponse(string urlContains, string jsonResponse, HttpStatusCode statusCode = HttpStatusCode.OK)
     {
-        _responses[urlContains] = jsonResponse;
+        _responses[urlContains] = (jsonResponse, statusCode);
     }
 
     protected override Task<HttpResponseMessage> SendAsync(
@@ -23,14 +25,14 @@ public class MockHttpMessageHandler : HttpMessageHandler
         var url = request.RequestUri!.ToString();
         RequestedUrls.Add(url);
 
-        foreach (var (key, value) in _responses)
+        foreach (var (key, (body, status)) in _responses)
         {
             if (url.Contains(key))
             {
                 return Task.FromResult(new HttpResponseMessage
                 {
-                    StatusCode = HttpStatusCode.OK,
-                    Content = new StringContent(value)
+                    StatusCode = status,
+                    Content = new StringContent(body)
                 });
             }
         }
@@ -100,7 +102,8 @@ public class FunctionTests : IDisposable
     private static Function CreateFunction(MockHttpMessageHandler handler)
     {
         var httpClient = new HttpClient(handler);
-        return new Function(httpClient);
+        var logger = NullLogger<Function>.Instance;
+        return new Function(httpClient, logger);
     }
 
     // ── Origin 檢查 ──
@@ -377,5 +380,64 @@ public class FunctionTests : IDisposable
         Assert.Equal(429, blockedCtx.Response.StatusCode);
         var body = await GetResponseBody(blockedCtx);
         Assert.Contains("每日請求上限", body);
+    }
+
+    // ── X-Forwarded-For ──
+
+    [Fact]
+    public async Task X_Forwarded_For_用於速率限制()
+    {
+        var handler = new MockHttpMessageHandler();
+        handler.SetResponse("GetPlayerSummaries", PlayerNotPlayingResponse);
+        var function = CreateFunction(handler);
+
+        // 用同一個 X-Forwarded-For IP 發送 10 次
+        for (int i = 0; i < 10; i++)
+        {
+            var ctx = CreateContext(ip: $"192.168.1.{i}");
+            ctx.Request.Headers["X-Forwarded-For"] = "203.0.113.50, 10.0.0.1";
+            await function.HandleAsync(ctx);
+        }
+
+        // 第 11 次同一個 X-Forwarded-For 應該被擋（即使 RemoteIpAddress 不同）
+        var blockedCtx = CreateContext(ip: "192.168.1.99");
+        blockedCtx.Request.Headers["X-Forwarded-For"] = "203.0.113.50, 10.0.0.1";
+        await function.HandleAsync(blockedCtx);
+
+        Assert.Equal(429, blockedCtx.Response.StatusCode);
+    }
+
+    // ── Steam API 異常情境 ──
+
+    [Fact]
+    public async Task SteamAPI回傳無效JSON_回傳空GameName()
+    {
+        var handler = new MockHttpMessageHandler();
+        handler.SetResponse("GetPlayerSummaries", "this is not json");
+        var function = CreateFunction(handler);
+        var context = CreateContext();
+
+        await function.HandleAsync(context);
+
+        Assert.Equal(200, context.Response.StatusCode);
+        var body = await GetResponseBody(context);
+        var json = JObject.Parse(body);
+        Assert.Equal("", json["GameName"]!.ToString());
+    }
+
+    [Fact]
+    public async Task SteamAPI回傳非200_回傳空GameName()
+    {
+        var handler = new MockHttpMessageHandler();
+        handler.SetResponse("GetPlayerSummaries", "{}", HttpStatusCode.ServiceUnavailable);
+        var function = CreateFunction(handler);
+        var context = CreateContext();
+
+        await function.HandleAsync(context);
+
+        Assert.Equal(200, context.Response.StatusCode);
+        var body = await GetResponseBody(context);
+        var json = JObject.Parse(body);
+        Assert.Equal("", json["GameName"]!.ToString());
     }
 }

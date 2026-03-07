@@ -3,6 +3,7 @@ using Google.Cloud.Functions.Hosting;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using System;
 using System.Collections.Concurrent;
 using System.Net.Http;
@@ -27,6 +28,7 @@ public class Startup : FunctionsStartup
 public class Function : IHttpFunction
 {
     private readonly HttpClient _httpClient;
+    private readonly ILogger<Function> _logger;
 
     // ── 設定 ──
     private const string AllowedOrigin = "https://marsantony.github.io";
@@ -39,15 +41,18 @@ public class Function : IHttpFunction
     private static readonly ConcurrentDictionary<string, string> _gameNameCache = new();
 
     // ── 速率限制（in-memory）──
-    private static readonly ConcurrentDictionary<string, List<DateTime>> _ipRequests = new();
+    private static readonly ConcurrentDictionary<string, List<DateTime>> _ipRequestTimestamps = new();
     private static int _globalDailyCount = 0;
     private static DateTime _globalDailyReset = DateTime.UtcNow.Date.AddDays(1);
 
     // ── 重複請求限制（per steamid）──
     private static readonly ConcurrentDictionary<string, (DateTime time, string response)> _duplicateCache = new();
 
-    public Function(HttpClient httpClient) =>
+    public Function(HttpClient httpClient, ILogger<Function> logger)
+    {
         _httpClient = httpClient;
+        _logger = logger;
+    }
 
     public async Task HandleAsync(HttpContext context)
     {
@@ -114,9 +119,7 @@ public class Function : IHttpFunction
 
             if (tokenGameId == null)
             {
-                var response = JsonConvert.SerializeObject(result);
-                UpdateDuplicateCache(steamId, response);
-                await context.Response.WriteAsync(response);
+                await WriteResultAsync(context, steamId, result);
                 return;
             }
 
@@ -141,11 +144,20 @@ public class Function : IHttpFunction
                 }
             }
         }
-        catch
+        catch (HttpRequestException ex)
         {
-            // Steam API 異常時回傳空 GameName
+            _logger.LogWarning(ex, "Steam API 請求失敗 (steamId: {SteamId})", steamId);
+        }
+        catch (JsonException ex)
+        {
+            _logger.LogWarning(ex, "Steam API 回應 JSON 解析失敗 (steamId: {SteamId})", steamId);
         }
 
+        await WriteResultAsync(context, steamId, result);
+    }
+
+    private static async Task WriteResultAsync(HttpContext context, string steamId, Dictionary<string, string> result)
+    {
         var responseJson = JsonConvert.SerializeObject(result);
         UpdateDuplicateCache(steamId, responseJson);
         await context.Response.WriteAsync(responseJson);
@@ -160,7 +172,8 @@ public class Function : IHttpFunction
         {
             _globalDailyCount = 0;
             _globalDailyReset = now.Date.AddDays(1);
-            _ipRequests.Clear();
+            _ipRequestTimestamps.Clear();
+            CleanupDuplicateCache();
         }
 
         // 全域每日限制
@@ -170,23 +183,38 @@ public class Function : IHttpFunction
         }
         _globalDailyCount++;
 
-        // 每 IP 每分鐘限制
-        var ip = context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
-        var requests = _ipRequests.GetOrAdd(ip, _ => new List<DateTime>());
+        // 每 IP 每分鐘限制（Cloud Run 環境使用 X-Forwarded-For 取得真實 IP）
+        var ip = context.Request.Headers["X-Forwarded-For"].FirstOrDefault()?.Split(',')[0].Trim()
+                 ?? context.Connection.RemoteIpAddress?.ToString()
+                 ?? "unknown";
+        var timestamps = _ipRequestTimestamps.GetOrAdd(ip, _ => new List<DateTime>());
 
-        lock (requests)
+        lock (timestamps)
         {
             var oneMinuteAgo = now.AddMinutes(-1);
-            requests.RemoveAll(t => t < oneMinuteAgo);
+            timestamps.RemoveAll(t => t < oneMinuteAgo);
 
-            if (requests.Count >= PerIpPerMinuteLimit)
+            if (timestamps.Count >= PerIpPerMinuteLimit)
             {
                 return "請求過於頻繁，請稍後再試";
             }
-            requests.Add(now);
+            timestamps.Add(now);
         }
 
         return null;
+    }
+
+    private static void CleanupDuplicateCache()
+    {
+        var now = DateTime.UtcNow;
+        var expiredKeys = _duplicateCache
+            .Where(kv => (now - kv.Value.time).TotalSeconds >= DuplicateWindowSeconds)
+            .Select(kv => kv.Key)
+            .ToList();
+        foreach (var key in expiredKeys)
+        {
+            _duplicateCache.TryRemove(key, out _);
+        }
     }
 
     internal static void ResetDuplicateCache()
@@ -197,7 +225,7 @@ public class Function : IHttpFunction
     internal static void ResetState()
     {
         _gameNameCache.Clear();
-        _ipRequests.Clear();
+        _ipRequestTimestamps.Clear();
         _globalDailyCount = 0;
         _globalDailyReset = DateTime.UtcNow.Date.AddDays(1);
         _duplicateCache.Clear();
@@ -210,11 +238,12 @@ public class Function : IHttpFunction
 
     private async Task<JObject> GetUrlResponse(string url)
     {
-        _httpClient.DefaultRequestHeaders.Remove("Accept-Language");
-        _httpClient.DefaultRequestHeaders.Add("Accept-Language", "zh-TW");
+        using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        request.Headers.Add("Accept-Language", "zh-TW");
 
-        using var clientResponse = await _httpClient.GetAsync(url);
-        var content = await clientResponse.Content.ReadAsStringAsync();
+        using var response = await _httpClient.SendAsync(request);
+        response.EnsureSuccessStatusCode();
+        var content = await response.Content.ReadAsStringAsync();
         return JObject.Parse(content);
     }
 }
