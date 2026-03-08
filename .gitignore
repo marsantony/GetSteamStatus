@@ -3,3 +3,6 @@ obj/
 *.user
 *.suo
 .vs/
+
+# Claude Code working files
+tasks/
