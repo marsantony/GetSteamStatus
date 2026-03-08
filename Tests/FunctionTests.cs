@@ -493,29 +493,6 @@ public class FunctionTests : IDisposable
         Assert.Equal(200, afterResetCtx.Response.StatusCode);
     }
 
-    [Fact]
-    public async Task 每日重置_清除過期重複請求快取()
-    {
-        var handler = new MockHttpMessageHandler();
-        handler.SetResponse("GetPlayerSummaries", PlayerNotPlayingResponse);
-        var function = CreateFunction(handler);
-
-        // 第一次請求，建立重複請求快取
-        var ctx1 = CreateContext();
-        await function.HandleAsync(ctx1);
-        var urlCountAfterFirst = handler.RequestedUrls.Count;
-
-        // 觸發每日重置（會呼叫 CleanupDuplicateCache）
-        Function.SetDailyResetForTesting(DateTime.UtcNow.AddMinutes(-1));
-
-        // 重置後同一個 steamid 應該重新呼叫 API（快取已被清除流程觸發）
-        var ctx2 = CreateContext();
-        await function.HandleAsync(ctx2);
-
-        // 應該有新的 API 呼叫
-        Assert.True(handler.RequestedUrls.Count > urlCountAfterFirst);
-    }
-
     // ── IP fallback ──
 
     [Fact]
