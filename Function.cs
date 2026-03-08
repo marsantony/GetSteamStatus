@@ -231,6 +231,11 @@ public class Function : IHttpFunction
         _duplicateCache.Clear();
     }
 
+    internal static void SetDailyResetForTesting(DateTime resetTime)
+    {
+        _globalDailyReset = resetTime;
+    }
+
     private static void UpdateDuplicateCache(string steamId, string response)
     {
         _duplicateCache[steamId] = (DateTime.UtcNow, response);

@@ -65,6 +65,11 @@ public class FunctionTests : IDisposable
         {"1245620":{"success":true,"data":{"name":"ELDEN RING"}}}
         """;
 
+    // Steam Store 模擬回應：沒有遊戲名稱
+    private const string AppDetailsNoNameResponse = """
+        {"1245620":{"success":true,"data":{"type":"game"}}}
+        """;
+
     public FunctionTests()
     {
         Function.ResetState();
@@ -439,5 +444,94 @@ public class FunctionTests : IDisposable
         var body = await GetResponseBody(context);
         var json = JObject.Parse(body);
         Assert.Equal("", json["GameName"]!.ToString());
+    }
+
+    [Fact]
+    public async Task appdetails無遊戲名稱_回傳空GameName()
+    {
+        var handler = new MockHttpMessageHandler();
+        handler.SetResponse("GetPlayerSummaries", PlayerPlayingResponse);
+        handler.SetResponse("appdetails", AppDetailsNoNameResponse);
+        var function = CreateFunction(handler);
+        var context = CreateContext();
+
+        await function.HandleAsync(context);
+
+        Assert.Equal(200, context.Response.StatusCode);
+        var body = await GetResponseBody(context);
+        var json = JObject.Parse(body);
+        Assert.Equal("", json["GameName"]!.ToString());
+    }
+
+    // ── 每日重置 ──
+
+    [Fact]
+    public async Task 每日重置後_計數器歸零_請求恢復正常()
+    {
+        var handler = new MockHttpMessageHandler();
+        handler.SetResponse("GetPlayerSummaries", PlayerNotPlayingResponse);
+        var function = CreateFunction(handler);
+
+        // 同一個 IP 發送 10 次，達到 per-IP 上限
+        for (int i = 0; i < 10; i++)
+        {
+            var ctx = CreateContext(ip: "10.0.0.1");
+            await function.HandleAsync(ctx);
+        }
+
+        // 確認已被限制
+        var blockedCtx = CreateContext(ip: "10.0.0.1");
+        await function.HandleAsync(blockedCtx);
+        Assert.Equal(429, blockedCtx.Response.StatusCode);
+
+        // 模擬跨日：把重置時間設為過去
+        Function.SetDailyResetForTesting(DateTime.UtcNow.AddMinutes(-1));
+
+        // 重置後同一個 IP 應該恢復正常
+        var afterResetCtx = CreateContext(ip: "10.0.0.1");
+        await function.HandleAsync(afterResetCtx);
+        Assert.Equal(200, afterResetCtx.Response.StatusCode);
+    }
+
+    [Fact]
+    public async Task 每日重置_清除過期重複請求快取()
+    {
+        var handler = new MockHttpMessageHandler();
+        handler.SetResponse("GetPlayerSummaries", PlayerNotPlayingResponse);
+        var function = CreateFunction(handler);
+
+        // 第一次請求，建立重複請求快取
+        var ctx1 = CreateContext();
+        await function.HandleAsync(ctx1);
+        var urlCountAfterFirst = handler.RequestedUrls.Count;
+
+        // 觸發每日重置（會呼叫 CleanupDuplicateCache）
+        Function.SetDailyResetForTesting(DateTime.UtcNow.AddMinutes(-1));
+
+        // 重置後同一個 steamid 應該重新呼叫 API（快取已被清除流程觸發）
+        var ctx2 = CreateContext();
+        await function.HandleAsync(ctx2);
+
+        // 應該有新的 API 呼叫
+        Assert.True(handler.RequestedUrls.Count > urlCountAfterFirst);
+    }
+
+    // ── IP fallback ──
+
+    [Fact]
+    public async Task 無IP資訊_使用unknown作為IP()
+    {
+        var handler = new MockHttpMessageHandler();
+        handler.SetResponse("GetPlayerSummaries", PlayerNotPlayingResponse);
+        var function = CreateFunction(handler);
+
+        // 建立沒有 IP 的 context
+        var context = CreateContext();
+        context.Connection.RemoteIpAddress = null;
+
+        await function.HandleAsync(context);
+
+        // 應該正常回應（用 "unknown" 作為 IP key）
+        Assert.Equal(200, context.Response.StatusCode);
     }
 }
