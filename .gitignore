@@ -6,3 +6,6 @@ obj/
 
 # Claude Code working files
 tasks/
+
+# Test coverage
+coverage/
