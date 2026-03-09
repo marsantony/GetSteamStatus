@@ -32,9 +32,9 @@ public class Function : IHttpFunction
 
     // ── 設定 ──
     private const string AllowedOrigin = "https://marsantony.github.io";
-    private const int PerIpPerMinuteLimit = 10;
-    private const int GlobalDailyLimit = 500;
-    private const int DuplicateWindowSeconds = 30;
+    private static readonly int PerIpPerMinuteLimit = int.TryParse(Environment.GetEnvironmentVariable("PER_IP_PER_MINUTE_LIMIT"), out var v1) ? v1 : 10;
+    private static readonly int GlobalDailyLimit = int.TryParse(Environment.GetEnvironmentVariable("GLOBAL_DAILY_LIMIT"), out var v2) ? v2 : 500;
+    private static readonly int DuplicateWindowSeconds = int.TryParse(Environment.GetEnvironmentVariable("DUPLICATE_WINDOW_SECONDS"), out var v3) ? v3 : 30;
     private static readonly Regex SteamIdPattern = new(@"^\d{17}$", RegexOptions.Compiled);
 
     // ── gameId → gameName 快取（in-memory，max instance = 1 所以安全）──

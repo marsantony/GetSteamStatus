@@ -49,6 +49,6 @@ jobs:
             --trigger-http \
             --allow-unauthenticated \
             --service-account=getsteamstatus@steamwebapi-394409.iam.gserviceaccount.com \
-            --set-env-vars=STEAM_API_KEY=${{ secrets.STEAM_API_KEY }} \
+            --set-env-vars=STEAM_API_KEY=${{ secrets.STEAM_API_KEY }},PER_IP_PER_MINUTE_LIMIT=${{ secrets.PER_IP_PER_MINUTE_LIMIT }},GLOBAL_DAILY_LIMIT=${{ secrets.GLOBAL_DAILY_LIMIT }},DUPLICATE_WINDOW_SECONDS=${{ secrets.DUPLICATE_WINDOW_SECONDS }} \
             --max-instances=1 \
             --memory=256Mi
